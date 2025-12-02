@@ -41,7 +41,7 @@ class EarthSimulation(QObject):
     @staticmethod
     def _parse_temp_label(text: str) -> float:
         """
-        '25 C' -> 25.0
+        'X' -> X.X
         """
         try:
             parts = text.split()
@@ -52,7 +52,7 @@ class EarthSimulation(QObject):
     @staticmethod
     def _parse_percentage_label(text: str) -> float:
         """
-        '20%' -> 0.20 (fraction 0–1)
+        'X%' -> 0.X (fraction 0–1)
         """
         try:
             t = text.strip().replace('%', '')
@@ -172,9 +172,12 @@ class EarthSimulation(QObject):
 
     def calc_precip_type(self) -> str:
         """
-        If air temp <= 0C → Snow, else Rain.
+        Treat air temperatures at or below 1°C as snow.
         """
-        return "Snow" if self.air_temp_c <= 0.0 else "Rain"
+        if self.air_temp_c <= 1.0:
+            return "Snow"
+        else:
+            return "Rain"
 
     def update_soil_moisture(self, storm_category: str) -> None:
         """
@@ -263,10 +266,10 @@ class EarthSimulation(QObject):
         """
         lookup = {
             "Decay": -0.07,
-            "Stressed": -0.02,
-            "Stable": 0.05,
-            "Healthy": 0.10,
-            "Flourishing": 0.20,
+            "Stressed": -0.00,
+            "Stable": 0.07,
+            "Healthy": 0.15,
+            "Flourishing": 0.25,
         }
         return lookup.get(status, 0.0)
 
@@ -329,8 +332,12 @@ class EarthSimulation(QObject):
                           predator_growth_factor: float) -> tuple[float, float, float]:
         """
         Apply a logistic-style feedback loop so populations don't explode.
-        Then apply extra "crash" rules if prey overshoot plants or
-        predators overshoot prey by more than 10%.
+        Then apply:
+        - extra "crash" rules if prey overshoot plants or predators overshoot prey
+          by more than 10%.
+        - extra "boost" rules if plants are more than double prey, or prey more
+          than double predators (5% bonus).
+        Finally, apply a fail-safe floor so no population truly dies out.
         """
         p = self.plant_pop
         prey = self.prey_pop
@@ -342,11 +349,11 @@ class EarthSimulation(QObject):
         base_pred = predator_growth_factor * pred * (1.0 - pred)
 
         # Interaction terms (simple predator–prey–plant loop)
-        eaten_plants = 0.10 * prey * p  # gentler grazing
-        prey_food_gain = 0.20 * p * prey  # more plants → more prey food
-        prey_eaten = 0.25 * pred * prey  # more predators → more prey eaten
-        pred_food_gain = 0.20 * prey * pred  # more prey → more predator growth
-        natural_pred_death = 0.05 * pred  # predators slowly die off
+        eaten_plants = 0.10 * prey * p          # gentler grazing
+        prey_food_gain = 0.20 * p * prey        # more plants → more prey food
+        prey_eaten = 0.25 * pred * prey         # more predators → more prey eaten
+        pred_food_gain = 0.20 * prey * pred     # more prey → more predator growth
+        natural_pred_death = 0.05 * pred        # predators slowly die off
 
         delta_plant = base_plant - eaten_plants
         delta_prey = base_prey + prey_food_gain - prey_eaten
@@ -358,24 +365,50 @@ class EarthSimulation(QObject):
         delta_prey *= damping
         delta_pred *= damping
 
-        # --- EXTRA CRASH CONDITIONS (hard feedback control) ---
-        # If prey are more than 10% above plants, many prey die back
+        # --- EXTRA CRASH CONDITIONS (soft) ---
+        # If prey are more than 10% above plants, some prey die back
         if prey > p * 1.10 and prey > 0:
-            # kill ~10% of current prey population in this step
-            delta_prey -= 0.10 * prey
+            delta_prey -= 0.05 * prey  # ~5% reduction
 
-        # If predators are more than 10% above prey, many predators die back
+        # If predators are more than 10% above prey, some predators die back
         if pred > prey * 1.10 and pred > 0:
-            # kill ~10% of current predator population in this step
-            delta_pred -= 0.10 * pred
+            delta_pred -= 0.05 * pred  # ~5% reduction
 
-        # Update and clamp to [0, 1]
-        self.plant_pop = clamp(p + delta_plant, 0.0, 1.0)
-        self.prey_pop = clamp(prey + delta_prey, 0.0, 1.0)
-        self.predator_pop = clamp(pred + delta_pred, 0.0, 1.0)
+        #  EXTRA BOOST CONDITIONS
+        # If plants are more than double prey, give prey a 5% boost
+        if p > 2.0 * prey and prey > 0:
+            delta_prey += 0.05 * prey   # +5% of current prey population
+
+        # If prey are more than double predators, give predators a 5% boost
+        if prey > 2.0 * pred and pred > 0:
+            delta_pred += 0.05 * pred   # +5% of current predator population
+
+        # Apply deltas
+        new_p = p + delta_plant
+        new_prey = prey + delta_prey
+        new_pred = pred + delta_pred
+
+        # Clamp to [0, 1]
+        new_p = clamp(new_p, 0.0, 1.0)
+        new_prey = clamp(new_prey, 0.0, 1.0)
+        new_pred = clamp(new_pred, 0.0, 1.0)
+
+        # --- FAIL-SAFE: nothing truly dies out ---
+        MIN_POP = 0.01  # 1% minimum population
+        if new_p < MIN_POP:
+            new_p = MIN_POP
+        if new_prey < MIN_POP:
+            new_prey = MIN_POP
+        if new_pred < MIN_POP:
+            new_pred = MIN_POP
+
+        # Commit back to state
+        self.plant_pop = new_p
+        self.prey_pop = new_prey
+        self.predator_pop = new_pred
 
         # Return actual changes so we can show them in the status window
-        return delta_plant, delta_prey, delta_pred
+        return new_p - p, new_prey - prey, new_pred - pred
 
     # ---------- one full simulation step ----------
 
@@ -446,7 +479,7 @@ class EarthSimulation(QObject):
             flood_status=flood_status,
         )
 
-        # 12. Append a multi-line log entry to the text box (Option B)
+        # 12. Append a multi-line log entry to the text box
         self._append_log_entry(
             pressure_hpa=pressure_hpa,
             evaporation_mm=evaporation_mm,
@@ -505,9 +538,8 @@ class EarthSimulation(QObject):
                           delta_predator: float) -> None:
         """
         Write a multi-line summary into the QTextBrowser at the bottom
-        (Option B – each notification on its own line).
         """
-        self.ui.Output_Text.append(f"Step {self.step_count}")
+        self.ui.Output_Text.append(f"Day {self.step_count}")
         self.ui.Output_Text.append(
             f"  Atmosphere: Air {self.air_temp_c:.1f}°C, "
             f"P={pressure_hpa:.0f} hPa, clouds ≈ {self.cloud_coverage * 100:.0f}%"
@@ -521,7 +553,9 @@ class EarthSimulation(QObject):
             f"Soil moisture={self.soil_moisture * 100:.0f}%, Vegetation={veg_status}"
         )
         self.ui.Output_Text.append(
-            f"  Biosphere: ΔPlant={delta_plant:+.3f}, "
+            f"  Biosphere: Plant={delta_plant:+.3f}, "
             f"Prey={delta_prey:+.3f}, Pred={delta_predator:+.3f}"
         )
+
+
 
