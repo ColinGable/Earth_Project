@@ -4,7 +4,12 @@ This project models interactions between several parts of the Earth system, incl
 
 Project Screenshot
 
-<!-- Replace the file path below with the location of your screenshot -->
+<img width="539" height="561" alt="ESP SC1" src="https://github.com/user-attachments/assets/d79180ae-b5bb-40ee-94ee-6a730afe8b21" />
+<img width="540" height="560" alt="ESP SC2" src="https://github.com/user-attachments/assets/6247e49f-58e2-4971-82d2-4d6eb822ca99" />
+<img width="534" height="554" alt="ESP SC3" src="https://github.com/user-attachments/assets/93e3a1c8-1f3a-4f28-88db-84ab1acb7052" />
+<img width="535" height="559" alt="ESP SC4" src="https://github.com/user-attachments/assets/b437ee06-7517-4776-a882-1390ba485a27" />
+
+
 
 
 
